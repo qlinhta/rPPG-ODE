@@ -6,6 +6,8 @@ from moviepy.editor import VideoFileClip
 import logging
 from colorama import Fore, Style, init
 import warnings
+from PIL import Image
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
@@ -39,7 +41,7 @@ def convert_ground_truth_to_numpy(ground_truth_path: str, subject: str, output_d
     logging.info(Fore.GREEN + f"Saved ground truth for {subject} to {output_path}" + Style.RESET_ALL)
 
 
-def extract_frames(input_dir: str, output_dir: str, fps: int) -> None:
+"""def extract_frames(input_dir: str, output_dir: str, fps: int) -> None:
     bin_dir = os.path.join(output_dir, 'bin')
     for subject in os.listdir(bin_dir):
         mp4_path = os.path.join(bin_dir, subject)
@@ -50,6 +52,28 @@ def extract_frames(input_dir: str, output_dir: str, fps: int) -> None:
             success, image = vidcap.read()
             while success:
                 frames.append(image)
+                success, image = vidcap.read()
+            frames_array = np.array(frames)
+            output_path = os.path.join(output_dir, f"{subject_name}_frames.npy")
+            np.save(output_path, frames_array)
+            logging.info(Fore.BLUE + f"Extracted and saved frames for {subject_name}" + Style.RESET_ALL)
+            vidcap.release()"""
+
+
+def extract_frames(input_dir: str, output_dir: str, fps: int) -> None:
+    bin_dir = os.path.join(output_dir, 'bin')
+    for subject in os.listdir(bin_dir):
+        mp4_path = os.path.join(bin_dir, subject)
+        if os.path.isfile(mp4_path) and mp4_path.endswith('.mp4'):
+            subject_name = os.path.splitext(subject)[0]
+            vidcap = cv2.VideoCapture(mp4_path)
+            frames = []
+            success, image = vidcap.read()
+            while success:
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                image = Image.fromarray(image)
+                image = image.resize((224, 224))
+                frames.append(np.array(image))
                 success, image = vidcap.read()
             frames_array = np.array(frames)
             output_path = os.path.join(output_dir, f"{subject_name}_frames.npy")
@@ -69,7 +93,8 @@ def main(input_dir: str, output_dir: str, fps: int) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Preprocess UBFC dataset.")
     parser.add_argument("--input_dir", type=str, required=True, help="Directory containing the original dataset.")
-    parser.add_argument("--output_dir", type=str, required=True, help="Directory where the processed data will be saved.")
+    parser.add_argument("--output_dir", type=str, required=True,
+                        help="Directory where the processed data will be saved.")
     parser.add_argument("--fps", type=int, default=30, help="Frames per second to extract from the videos.")
     args = parser.parse_args()
 
