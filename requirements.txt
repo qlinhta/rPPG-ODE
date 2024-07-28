@@ -1,0 +1,5 @@
+torch~=2.4.0
+numpy~=2.0.1
+opencv-python~=4.10.0.84
+moviepy~=1.0.3
+colorama~=0.4.6

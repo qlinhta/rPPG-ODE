@@ -1,0 +1,11 @@
+rPPG
+.idea
+__pycache__
+*.pyc
+*.pyo
+*.avi
+*.mov
+*.mp4
+processed
+UBFC
+*.npy
