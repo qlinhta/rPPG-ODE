@@ -9,3 +9,4 @@ __pycache__
 processed
 UBFC
 *.npy
+src/nfe/experiments/data
