@@ -4,9 +4,11 @@ import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch import nn, optim
 from tqdm import tqdm
+from prettytable import PrettyTable
+import matplotlib.pyplot as plt
 
 
-class RPpgDataset(Dataset):
+class RPPGDataset(Dataset):
     def __init__(self, features_dir, gt_dir, max_channels):
         self.features_dir = features_dir
         self.gt_dir = gt_dir
@@ -26,101 +28,166 @@ class RPpgDataset(Dataset):
             features = features[..., :self.max_channels]
         elif features.shape[-1] < self.max_channels:
             pad_size = self.max_channels - features.shape[-1]
-            features = np.pad(features, ((0, 0), (0, 0), (0, 0), (0, pad_size)), mode='constant')
-        features = features.reshape(features.shape[0], -1)
-        gt_value = np.mean(gt)
+            features = np.pad(features, ((0, 0), (0, pad_size)), mode='constant')
+
+        gt_value = gt
         return torch.tensor(features, dtype=torch.float32), torch.tensor(gt_value, dtype=torch.float32)
 
 
 def collate_fn(batch):
     features, gt = zip(*batch)
-    max_len_features = max([f.shape[0] for f in features])
-
-    padded_features = []
-
-    for f in features:
-        pad_size_features = max_len_features - f.shape[0]
-
-        padded_f = torch.nn.functional.pad(f, (0, 0, 0, pad_size_features))
-
-        padded_features.append(padded_f)
-
-    padded_features = torch.stack(padded_features)
+    features = torch.stack(features)
     gt = torch.stack(gt)
+    return features, gt
 
-    return padded_features, gt
 
-
-class RNNModel(nn.Module):
+class LSTMModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
-        super(RNNModel, self).__init__()
-        self.rnn = nn.RNN(input_dim, hidden_dim, num_layers, batch_first=True)
+        super(LSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        h0 = torch.zeros(self.rnn.num_layers, x.size(0), self.rnn.hidden_size).to(x.device)
-        out, _ = self.rnn(x, h0)
-        out = self.fc(out[:, -1, :])
-        return out
+        h0 = torch.zeros(self.lstm.num_layers, x.size(0), self.lstm.hidden_size).to(x.device)
+        c0 = torch.zeros(self.lstm.num_layers, x.size(0), self.lstm.hidden_size).to(x.device)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out)
+        return out.squeeze(-1)
 
 
-def train_model(dataloader, rnn_model, criterion, optimizer, device):
-    rnn_model.train()
+class DenseModel(nn.Module):
+    def __init__(self, input_dim, seq_len, output_dim):
+        super(DenseModel, self).__init__()
+        self.fc1 = nn.Linear(input_dim, 512)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(512, output_dim)
+
+    def forward(self, x):
+        batch_size, seq_len, num_features = x.size()
+        x = x.view(batch_size * seq_len, num_features)  # Flatten the input to (batch_size * seq_len, num_features)
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        x = x.view(batch_size, seq_len)  # Reshape to (batch_size, seq_len)
+        return x
+
+
+def train_model(dataloader, model, criterion, optimizer, device):
+    model.train()
     losses = []
-    progress = tqdm(dataloader, desc="Training", unit="batch")
-    for features, gt in progress:
+    progress = tqdm(dataloader, desc="Training", unit="batch", ascii=True)
+    running_loss = 0.0
+    for i, (features, gt) in enumerate(progress):
         features, gt = features.to(device), gt.to(device)
         optimizer.zero_grad()
-        outputs = rnn_model(features)
-        loss = criterion(outputs, gt.view(-1, 1))
+        outputs = model(features)
+        loss = criterion(outputs, gt)
         loss.backward()
         optimizer.step()
-        progress.set_postfix(loss=loss.item())
+
+        running_loss += loss.item()
+        progress.set_postfix(loss=running_loss / (i + 1))
         losses.append(loss.item())
     return np.mean(losses)
 
 
-def validate_model(dataloader, rnn_model, criterion, device):
-    rnn_model.eval()
+def validate_model(dataloader, model, criterion, device):
+    model.eval()
     losses = []
+    running_loss = 0.0
+    progress = tqdm(dataloader, desc="Validating", unit="batch", ascii=True)
     with torch.no_grad():
-        for features, gt in tqdm(dataloader, desc="Validating", unit="batch"):
+        for i, (features, gt) in enumerate(progress):
             features, gt = features.to(device), gt.to(device)
-            outputs = rnn_model(features)
-            loss = criterion(outputs, gt.view(-1, 1))
+            outputs = model(features)
+            loss = criterion(outputs, gt)
+
+            running_loss += loss.item()
             losses.append(loss.item())
+            progress.set_postfix(loss=running_loss / (i + 1))
     return np.mean(losses)
 
 
+def test_model(dataloader, model, device):
+    model.eval()
+    predictions = []
+    ground_truths = []
+    subjects = []
+    with torch.no_grad():
+        for features, gt in tqdm(dataloader, desc="Testing", unit="batch", ascii=True):
+            features, gt = features.to(device), gt.to(device)
+            outputs = model(features)
+            predictions.append(outputs.cpu().numpy())
+            ground_truths.append(gt.cpu().numpy())
+            subjects.append(features.cpu().numpy())
+
+    return predictions, ground_truths
+
+
+def plot_results(predictions, ground_truths):
+    fig, ax = plt.subplots(2, 2, figsize=(15, 8))
+    for i in range(min(4, len(predictions))):
+        row, col = i // 2, i % 2
+        ax[row, col].plot(ground_truths[i].flatten(), label="Ground Truth", color='blue', linewidth=1.5)
+        ax[row, col].plot(predictions[i].flatten(), label="Prediction", color='red', linewidth=1.5)
+        ax[row, col].minorticks_on()
+        ax[row, col].grid(which='major', linestyle='-', linewidth='0.5', color='grey', zorder=0, alpha=0.3)
+        ax[row, col].grid(which='minor', linestyle='-', linewidth='0.5', color='gray', zorder=0, alpha=0.2)
+        ax[row, col].legend()
+    plt.tight_layout()
+    plt.savefig(f'./figures/rppg_signal_comparison.pdf', bbox_inches='tight')
+    plt.show()
+
+
 def main():
-    device = torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu')
-    features_dir = './features/'
-    gt_dir = './processed/'
-    batch_size = 1
-    learning_rate = 1e-3
-    num_epochs = 10
-    max_channels = 768
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    FEATURE = "efficientnet_b0"
+    FEATURE_DIR = f'./features/{FEATURE}'
+    GROUND_TRUTH = './processed/'
+    BATCH_SIZE = 1
+    LEARNING_RATE = 1e-1
+    EPOCHS = 10
+    MAX_CHANNELS = 1
 
-    dataset = RPpgDataset(features_dir, gt_dir, max_channels)
+    table = PrettyTable()
+    table.field_names = ["Feature Extractor", "Batch Size", "Learning Rate", "Num Epochs", "Max Channels"]
+    table.add_row([FEATURE, BATCH_SIZE, LEARNING_RATE, EPOCHS, MAX_CHANNELS])
+    print(table)
 
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    dataset = RPPGDataset(FEATURE_DIR, GROUND_TRUTH, MAX_CHANNELS)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=collate_fn, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=collate_fn, shuffle=False)
+    train_size = int(0.6 * len(dataset))
+    val_size = int(0.2 * len(dataset))
+    test_size = len(dataset) - train_size - val_size
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
-    input_dim = 7 * 7 * max_channels
-    rnn_model = RNNModel(input_dim=input_dim, hidden_dim=512, output_dim=1, num_layers=2).to(device)
+    train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn, shuffle=False)
+
+    input_dim = MAX_CHANNELS
+    SEQ_LEN = 250
+    # lstm_model = LSTMModel(input_dim=input_dim, hidden_dim=512, output_dim=1, num_layers=2).to(DEVICE)
+    model = DenseModel(input_dim=input_dim, seq_len=SEQ_LEN, output_dim=1).to(DEVICE)
 
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(rnn_model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    for epoch in range(num_epochs):
-        print(f"Epoch {epoch + 1}/{num_epochs}")
-        train_loss = train_model(train_dataloader, rnn_model, criterion, optimizer, device)
-        val_loss = validate_model(val_dataloader, rnn_model, criterion, device)
-        print(f"Training Loss: {train_loss}, Validation Loss: {val_loss}")
+    for epoch in range(EPOCHS):
+        print(f"Epoch {epoch + 1}/{EPOCHS}")
+        train_loss = train_model(train_dataloader, model, criterion, optimizer, DEVICE)
+        val_loss = validate_model(val_dataloader, model, criterion, DEVICE)
+        table = PrettyTable()
+        table.field_names = ["Epoch", "Training Loss", "Validation Loss"]
+        table.add_row([epoch + 1, train_loss, val_loss])
+        print(table)
+
+    predictions, ground_truths = test_model(test_dataloader, model, DEVICE)
+    plot_results(predictions, ground_truths)
+
+    os.makedirs("./saved_models", exist_ok=True)
+    torch.save(model.state_dict(),
+               f"./saved_models/lstm_model_{FEATURE}_{MAX_CHANNELS}_{EPOCHS}_{LEARNING_RATE}.pt")
 
 
 if __name__ == "__main__":

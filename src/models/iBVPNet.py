@@ -127,7 +127,6 @@ if __name__ == "__main__":
     import torch
     from torch.utils.tensorboard import SummaryWriter
 
-    # default `log_dir` is "runs" - we'll be more specific here
     writer = SummaryWriter('runs/iBVPNet')
 
     duration = 8
@@ -140,9 +139,7 @@ if __name__ == "__main__":
     test_data = torch.rand(batch_size, in_channels, frames, height, width)
 
     net = iBVPNet(in_channels=in_channels, frames=frames, debug=True)
-    # print("-"*100)
-    # print(net)
-    # print("-"*100)
+
     pred = net(test_data)
 
     print(pred.shape)
